@@ -47,21 +47,9 @@ io.on('connection', function(socket) {    //connection event
 });
 
 function actualStatusMpc(socket, sounds) {                     //update player data 
-
    exec('/usr/bin/mpc status', (error, stdout, stderr) => {
-      if(error) {
-         console.error(`error: ${error.message}`);
-         let write = date[0] + ' actualStatusMpc error ' + error + '\n';
-         fs.appendFile("serverLog.txt", write, function() {});
-         return;
-      }
-
-      if(stderr) {
-         console.error(`stderr: ${stderr}`);
-         let write = date[0] + ' actualStatusMpc error ' + stderr + '\n';
-         fs.appendFile("serverLog.txt", write, function() {});
-         return;
-      }
+      (error)?serverLog('actualStatusMpc error', error):'';
+      (stderr)?serverLog('actualStatusMpc error', stderr):'';
 
       stdout = stdout.trim().split('\n');
       let mpcData = stdout[stdout.length - 1].replace(/\s+/g, ' ').trim().split('  ');
@@ -94,12 +82,7 @@ function updatePlaylists(playlists, socket){                   //update playlist
 
    connection.query("SELECT * FROM playlist",
    function(err, results) {
-      if(err != null){
-         console.log(err);
-         let write = date[0] + ' updatePlaylists error ' + err + '\n';
-         fs.appendFile("serverLog.txt", write, function() {});
-         return;
-      }
+      (err)?serverLog('updatePlaylists error', err):'';      
       
       if(!comparePlaylists(playlists, results)){
          playlists.splice(0, playlists.length);
@@ -118,21 +101,13 @@ cron.schedule('*/10 * * * * *', function() {
 
 function cronTab(){
    if (whatToPlay){                                            //если выбран mp3 файл
-      exec('/usr/bin/mpc clear');
-      playThisFile(whatToPlay);                                //играть файл
-      whatToPlay = 0;
+      exec('/usr/bin/mpc clear', () => {
+         playThisFile();                                       //играть файл
+      });
       return;
    }
 
    exec('/usr/bin/mpc status', (error, stdout, stderr) => {    //статус проигрывателя
-      if(error) {
-         console.error(`error: ${error.message}`);
-         return;
-      }
-      if(stderr) {
-         console.error(`stderr: ${stderr}`);
-         return;
-      }
       stdout = stdout.trim().split('\n');                      //разбить статус плеера по разрыву строки
       let status;                                              //равен или playing или pause или stop
       let singleMode =  stdout[stdout.length - 1].split(' ').join('').split('consume').shift().split(':').pop();     //режим одиночного проигрывания. Равен либо on либо off
@@ -177,15 +152,11 @@ function cronTab(){
       const playlist = [date[2], date[2]];
       let connection = makeConnection(mysql);
       connection.query(sql, playlist, function(err, file) {                      //получить плейлист, который должен играть
-         if(err) {
-            let write = date[0] + ' crontab ' + err + '\n';
-            fs.appendFile("serverLog.txt", write, function() {});
-         }
+
+         (err)?serverLog('crontab', err):'';
+
          connection.query('SELECT * FROM `playlist` WHERE playing = 1', function(err, currentPlayingFile) {       //получить плейлист с playing == 1
-            if(err) {
-               let write = date[0] + ' crontab ' + err + '\n';
-               fs.appendFile("serverLog.txt", write, function() {});
-            }
+            (err)?serverLog('crontab', err):'';
 
             if(status == 'paused'){
                exec('/usr/bin/mpc toggle');
@@ -196,25 +167,34 @@ function cronTab(){
                   exec('/usr/bin/mpc clear');
                }
             }else if((file.length != 0) && (currentPlayingFile.length == 0)){    //что-то должно играть, но не играет
-               exec('/usr/bin/mpc clear');
                connection.query('UPDATE `playlist` SET `playing` = 0 WHERE playing = 1');
-               exec('/usr/bin/mpc load ' + file[0]['file'] + ' & mpc toggle'); 
                connection.query("UPDATE `playlist` SET `playing` = 1 WHERE id = " + file[0]['id']);
+               exec('/usr/bin/mpc clear', () => {
+                  exec('/usr/bin/mpc load ' + file[0]['file'], () => {
+                     exec('/usr/bin/mpc toggle'); 
+                  });
+               });
             }else if((file.length == 0) && (currentPlayingFile.length != 0)){    //если не должно играть, а играет
                connection.query('UPDATE `playlist` SET `playing` = 0 WHERE playing = 1');
                exec('/usr/bin/mpc clear');
             }else if((file.length != 0) && (currentPlayingFile.length != 0)){    //если должно что-то играть
                if(file[0]['id'] != currentPlayingFile[0]['id']){                 //если играет не тот плейлист
-                  exec('/usr/bin/mpc clear');
                   connection.query('UPDATE `playlist` SET `playing` = 0 WHERE playing = 1');
-                  exec('/usr/bin/mpc load ' + file[0]['file'] + ' & mpc toggle'); 
                   connection.query("UPDATE `playlist` SET `playing` = 1 WHERE id = " + file[0]['id']);
+                  exec('/usr/bin/mpc clear', () => {
+                     exec('/usr/bin/mpc load ' + file[0]['file'], () => {
+                        exec('/usr/bin/mpc toggle'); 
+                     });
+                  });
                }else{
                   if(status == 'stop') {  
-                     exec('/usr/bin/mpc clear');
                      connection.query('UPDATE `playlist` SET `playing` = 0 WHERE playing = 1');
-                     connection.query("UPDATE `playlist` SET `playing` = 1 WHERE id = " + file[0]['id']);                 
-                     exec('/usr/bin/mpc load ' + file[0]['file'] + ' & mpc toggle');                  
+                     connection.query("UPDATE `playlist` SET `playing` = 1 WHERE id = " + file[0]['id']);
+                     exec('/usr/bin/mpc clear', () => {                      
+                        exec('/usr/bin/mpc load ' + file[0]['file'], () => {
+                           exec('/usr/bin/mpc toggle'); 
+                        });           
+                     });                 
                   }
                }
             }
@@ -265,17 +245,25 @@ function makeConnection(mysql) {
   return connection;
 }
 
-function playThisFile(id) {
-   let date = thsDate();
+function playThisFile() {
    let sql = "select file from souds where id = ?";
    const connection = makeConnection(mysql);
-   const selectThis = [id];
-   connection.query(sql, selectThis, function(err, file) {
+   connection.query(sql, whatToPlay, function(err, file) {
       if(err) {
-         let write = date[0] + ' crontab ' + err + '\n';
-         fs.appendFile("serverLog.txt", write, function() {});
-         return;
+         serverLog('playThisFile', err);
+      }else{
+         if(file) {
+            exec('/usr/bin/mpc add ' + file[0]['file'] + ' & mpc single on', (error, stdout, stderr) => {
+               (error)?serverLog('playThisFile', error):exec('/usr/bin/mpc toggle');
+            });
+         }
       }
-      exec('/usr/bin/mpc add ' + file[0]['file'] + ' & mpc single on & mpc toggle');
    });
+   whatToPlay = 0;
+}
+
+function serverLog(action, text) {
+   let date = thsDate();
+   let write = date[0] + ' ' + action + ' ' + text + '\n';
+   fs.appendFile("serverLog.txt", write, function() {});
 }
